@@ -1,0 +1,190 @@
+name: Public synthetic CI probe
+
+# No push, pull_request, schedule, workflow_call or deployment triggers.
+on:
+  workflow_dispatch:
+    inputs:
+      mobile_smoke:
+        description: 'Also build generated public Flutter Android/iOS sample apps (slow; never private source)'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+concurrency:
+  group: public-synthetic-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  public-safety:
+    name: Allowlisted public-only tree
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # official checkout v5.0.1; Node 24
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Enforce approved repository, manual dispatch and hosted runner
+        env:
+          EXPECTED_PUBLIC_REPO: sudheeerrr/bulkgram-ci-public
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == "$EXPECTED_PUBLIC_REPO" ]] || { echo 'Unapproved public CI repository'; exit 61; }
+          [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' ]] || { echo 'Manual dispatch required'; exit 62; }
+          [[ "$GITHUB_REF" == 'refs/heads/main' ]] || { echo 'Only approved default branch may run'; exit 63; }
+          [[ "${RUNNER_ENVIRONMENT:-}" == 'github-hosted' ]] || { echo 'Self-hosted runners are forbidden'; exit 64; }
+      - run: python3 scripts/public_surface_guard.py
+      - run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
+  node:
+    name: Synthetic Node API security
+    needs: public-safety
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # official setup-node v5.0.0; Node 24
+        with:
+          node-version: '22.16.0'
+          check-latest: false
+      - name: Enforce exact Node runtime and execute synthetic tests
+        run: |
+          set -euo pipefail
+          [[ "$(node -p 'process.version')" == 'v22.16.0' ]] || exit 41
+          npm test
+
+  python:
+    name: Synthetic Python guard checks
+    needs: public-safety
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
+  mariadb:
+    name: Disposable MariaDB 11 smoke and rollback
+    needs: public-safety
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    services:
+      db:
+        image: mariadb:11.4.13@sha256:9c8b5172fa219e01913060f26c5498029999657fb9b7e7bbd0ca9e87f51020e2 # Docker Hub linux/amd64 manifest; exact image pull pending hosted validation
+        env:
+          MARIADB_ROOT_PASSWORD: synthetic-root-only
+          MARIADB_DATABASE: public_ci_synthetic
+          MARIADB_USER: publicci
+          MARIADB_PASSWORD: synthetic-test-only
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    env:
+      CI_DB_HOST: 127.0.0.1
+      CI_DB_CONTAINER_ID: ${{ job.services.db.id }}
+      CI_DB_NAME: public_ci_synthetic
+      CI_DB_USER: publicci
+      CI_DB_PASSWORD: synthetic-test-only
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Run bundled MariaDB client inside the pinned disposable service
+        run: bash scripts/mysql-smoke.sh
+
+  browser:
+    name: Synthetic headless Chrome render
+    needs: public-safety
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - run: bash scripts/browser-smoke.sh
+
+  android:
+    name: Optional generated Flutter Android sample
+    needs: public-safety
+    if: inputs.mobile_smoke == true
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    env:
+      PUBLIC_CI_MOBILE_OPT_IN: 'yes'
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - run: bash scripts/mobile-smoke.sh
+
+  ios:
+    name: Optional generated Flutter iOS simulator sample
+    needs: public-safety
+    if: inputs.mobile_smoke == true
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      PUBLIC_CI_MOBILE_OPT_IN: 'yes'
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - run: bash scripts/mobile-smoke.sh
+
+  summary:
+    name: Fail-closed synthetic outcome
+    if: always()
+    needs: [public-safety, node, python, mariadb, browser, android, ios]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Enforce required job success; report optional mobile status
+        env:
+          GATE: ${{ needs.public-safety.result }}
+          NODE: ${{ needs.node.result }}
+          PYTHON: ${{ needs.python.result }}
+          DB: ${{ needs.mariadb.result }}
+          BROWSER: ${{ needs.browser.result }}
+          ANDROID: ${{ needs.android.result }}
+          IOS: ${{ needs.ios.result }}
+          MOBILE_REQUESTED: ${{ inputs.mobile_smoke }}
+        run: |
+          set -euo pipefail
+          for item in GATE NODE PYTHON DB BROWSER; do
+            value=${!item}
+            echo "$item: $value"
+            [[ "$value" == 'success' ]] || exit 50
+          done
+          for item in ANDROID IOS; do
+            value=${!item}
+            echo "$item: $value"
+            if [[ "$MOBILE_REQUESTED" == 'true' ]]; then
+              [[ "$value" == 'success' ]] || exit 51
+            else
+              [[ "$value" == 'skipped' ]] || exit 52
+            fi
+          done
+          echo 'PASS: synthetic public runner checks only; NOT BULKGRAM release acceptance'
