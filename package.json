@@ -1,0 +1,12 @@
+{
+  "name": "public-safe-ci-synthetic",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Synthetic public CI probes only; contains no private application code",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check src/server.mjs && npm test"
+  },
+  "engines": {"node": ">=22"}
+}
