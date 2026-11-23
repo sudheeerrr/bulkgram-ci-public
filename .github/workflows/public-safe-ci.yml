@@ -100,7 +100,6 @@ jobs:
           --health-retries=12
     env:
       CI_DB_HOST: 127.0.0.1
-      CI_DB_CONTAINER_ID: ${{ job.services.db.id }}
       CI_DB_NAME: public_ci_synthetic
       CI_DB_USER: publicci
       CI_DB_PASSWORD: synthetic-test-only
@@ -110,6 +109,8 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
       - name: Run bundled MariaDB client inside the pinned disposable service
+        env:
+          CI_DB_CONTAINER_ID: ${{ job.services.db.id }}
         run: bash scripts/mysql-smoke.sh
 
   browser:
