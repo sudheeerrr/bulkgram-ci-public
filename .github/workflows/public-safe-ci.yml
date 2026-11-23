@@ -100,6 +100,7 @@ jobs:
           --health-retries=12
     env:
       CI_DB_HOST: 127.0.0.1
+      CI_DB_PORT: '3306'
       CI_DB_NAME: public_ci_synthetic
       CI_DB_USER: publicci
       CI_DB_PASSWORD: synthetic-test-only
@@ -108,14 +109,11 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 1
-      - name: Run bundled MariaDB client inside the pinned disposable service
+      - name: Install disposable MariaDB client and run smoke tests
         run: |
           set -euo pipefail
-          # Discover the running service container at runtime.
-          # Avoids the invalid ${{ job.services.db.id }} expression that GitHub rejects during workflow validation.
-          CI_DB_CONTAINER_ID=$(docker ps --filter "ancestor=mariadb:11.4.13@sha256:9c8b5172fa219e01913060f26c5498029999657fb9b7e7bbd0ca9e87f51020e2" --format "{{.ID}}" | head -n 1)
-          [[ -n "$CI_DB_CONTAINER_ID" ]] || { echo 'MariaDB service container not found'; exit 18; }
-          export CI_DB_CONTAINER_ID
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mariadb-client
           bash scripts/mysql-smoke.sh
 
   browser:
